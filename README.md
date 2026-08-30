@@ -68,6 +68,8 @@ Under the hood it uses the official **HNetCfg COM API** (`INetSharingConfigurati
 
 That's it. The device gets internet and you land in its shell.
 
+**SSH session:** by default the script hands over to the native OpenSSH client and the **device asks you for the credentials**. If `ssh.exe` is not available on the system (or you prefer a module-based session), add `-UseSshModule`: the script **auto-installs Posh-SSH** (user scope, no admin) and prompts for the credentials with a secure dialog, then gives you an interactive remote shell (type `exit` to close it).
+
 ## Parameters
 
 | Parameter | Default | Description |
@@ -75,6 +77,7 @@ That's it. The device gets internet and you land in its shell.
 | `-SshUser <user>` | `orangepi` | SSH user of the target device (e.g. `pi` for Raspberry Pi OS) |
 | `-StaticIp <ip>` | *(empty)* | Known static IP of the device — checked first, no sweep needed |
 | `-DiscoveryTimeoutSec <n>` | `120` | How long to search the `192.168.137.x` subnet |
+| `-UseSshModule` | off | Use the Posh-SSH module for the SSH session (auto-installed if missing) instead of the native OpenSSH client |
 | `-ProbeHost <host>` | `1.1.1.1` | Host used to check the host PC's internet before/after activation |
 | `-Force` | off | Skip the interactive confirmation |
 | `-Undo` | off | Disable ICS, restore DHCP and clean leftovers |

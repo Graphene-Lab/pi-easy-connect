@@ -15,6 +15,7 @@
 #   .\pi-easy-connect.ps1 -SshUser pi         SSH user of the target device (default: orangepi)
 #   .\pi-easy-connect.ps1 -StaticIp 192.168.137.100   fast path for a static-IP device
 #   .\pi-easy-connect.ps1 -DiscoveryTimeoutSec 300   longer search window (slow DHCP)
+#   .\pi-easy-connect.ps1 -UseSshModule    use the Posh-SSH module for the SSH session (auto-installed if missing)
 #
 # Official Microsoft references:
 #   SHARINGCONNECTIONTYPE: ICSSHARINGTYPE_PUBLIC = 0, ICSSHARINGTYPE_PRIVATE = 1
@@ -27,6 +28,7 @@
 param(
     [switch]$Undo,
     [switch]$Force,
+    [switch]$UseSshModule,
     [string]$SshUser = "orangepi",
     [string]$ProbeHost = "1.1.1.1",
     [string]$StaticIp = "",
@@ -38,8 +40,9 @@ $ErrorActionPreference = "Stop"
 # --- Self-elevate (ICS requires administrator privileges) ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    if ($Undo)     { $argLine += " -Undo" }
-    if ($Force)    { $argLine += " -Force" }
+    if ($Undo)         { $argLine += " -Undo" }
+    if ($Force)        { $argLine += " -Force" }
+    if ($UseSshModule) { $argLine += " -UseSshModule" }
     if ($SshUser -ne "orangepi") { $argLine += " -SshUser $SshUser" }
     if ($StaticIp) { $argLine += " -StaticIp $StaticIp" }
     Start-Process powershell.exe -Verb RunAs -ArgumentList $argLine
@@ -182,6 +185,47 @@ function Find-DeviceIp {
         }
     } catch { }
     return $null
+}
+
+function Ensure-PoshSsh {
+    # Install (user scope) and import the Posh-SSH module when ssh.exe is not usable.
+    if (-not (Get-Module -ListAvailable -Name Posh-SSH -ErrorAction SilentlyContinue)) {
+        Write-Host "Posh-SSH module not found - installing (user scope)..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false | Out-Null
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+            Install-Module -Name Posh-SSH -Scope CurrentUser -Force -Confirm:$false
+        } catch {
+            throw ("Posh-SSH installation failed: " + $_.Exception.Message)
+        }
+    }
+    Import-Module Posh-SSH -ErrorAction Stop
+}
+
+function Enter-SshSession {
+    # Interactive remote shell over Posh-SSH: the credential prompt asks for the device
+    # user/password, then every line is executed on the device until 'exit'.
+    param([string]$HostIp, [string]$User)
+    $cred = Get-Credential -UserName $User -Message ("SSH credentials for " + $User + "@" + $HostIp)
+    if (-not $cred) { Write-Host "Login cancelled." -ForegroundColor Yellow; return }
+    $s = New-SSHSession -ComputerName $HostIp -Credential $cred -AcceptKey -ConnectionTimeout 15
+    if (-not $s) { Write-Host ("SSH connection to " + $HostIp + " failed.") -ForegroundColor Red; return }
+    Write-Host ("Connected to " + $User + "@" + $HostIp + " - type 'exit' to quit.") -ForegroundColor Cyan
+    while ($true) {
+        $cmdline = Read-Host ($User + "@" + $HostIp + ">")
+        if ($cmdline -in @("exit", "logout", "quit")) { break }
+        if ([string]::IsNullOrWhiteSpace($cmdline)) { continue }
+        try {
+            $res = Invoke-SSHCommand -SessionId $s.SessionId -Command $cmdline -TimeOut 60
+            if ($res.Output) { $res.Output }
+            if ($res.Error)  { $res.Error | ForEach-Object { Write-Host $_ -ForegroundColor Red } }
+        } catch {
+            Write-Warning ("Command error: " + $_.Exception.Message)
+        }
+    }
+    Remove-SSHSession -SessionId $s.SessionId | Out-Null
+    Write-Host "SSH session closed." -ForegroundColor Yellow
 }
 
 # ============================ UNDO ============================
@@ -370,8 +414,20 @@ if ($dev) {
     }
 
     if ($sshReady) {
-        Write-Host ("`nConnecting via SSH to " + $SshUser + "@" + $dev) -ForegroundColor Cyan
-        ssh $SshUser@$dev
+        # Interactive SSH: default = native OpenSSH client (the device asks for credentials).
+        # With -UseSshModule (or when ssh.exe is missing) the Posh-SSH module is used instead
+        # (auto-installed if missing) and credentials are asked via Get-Credential.
+        if (-not $UseSshModule -and (Get-Command ssh -ErrorAction SilentlyContinue)) {
+            Write-Host ("`nConnecting via SSH to " + $SshUser + "@" + $dev + " (the device will ask for credentials)...") -ForegroundColor Cyan
+            ssh $SshUser@$dev
+        } else {
+            try {
+                Ensure-PoshSsh
+                Enter-SshSession -HostIp $dev -User $SshUser
+            } catch {
+                Write-Warning ("Posh-SSH session failed: " + $_.Exception.Message)
+            }
+        }
         Write-Host "`nSSH session ended. To disable the internet sharing:" -ForegroundColor Yellow
         Write-Host "  .\pi-easy-connect.ps1 -Undo" -ForegroundColor White
     } else {
