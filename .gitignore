@@ -1,0 +1,9 @@
+# Logs and local leftovers
+*.log
+connect-out.log
+
+# Editor/OS noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
